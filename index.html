@@ -9,10 +9,10 @@
         canvas { display: block; }
         #joystick-zone { position: absolute; bottom: 50px; left: 50px; width: 150px; height: 150px; z-index: 100; }
         #action-buttons { position: absolute; bottom: 50px; right: 50px; display: flex; gap: 20px; z-index: 100; }
-        .action-btn { width: 80px; height: 80px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); background: rgba(255,255,255,0.1); color: white; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        .action-btn { width: 80px; height: 80px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); background: rgba(255,255,255,0.1); color: white; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(5px); font-weight: bold; }
         #loading-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 200; }
         #progress-container { width: 200px; height: 4px; background: #333; margin-top: 15px; border-radius: 2px; }
-        #progress-bar { width: 0%; height: 100%; background: #fff; }
+        #progress-bar { width: 0%; height: 100%; background: #fff; transition: width 0.1s; }
     </style>
 </head>
 <body>
@@ -52,29 +52,120 @@
         function init() {
             clock = new THREE.Clock();
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x000000);
+            scene.background = new THREE.Color(0x050505);
 
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 50000);
-            camera.position.set(0, 20, 40); 
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 10000);
+            camera.position.set(0, 15, 30); 
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.shadowMap.enabled = true;
             document.body.appendChild(renderer.domElement);
 
-            scene.add(new THREE.AmbientLight(0xffffff, 1.5));
-            const dLight = new THREE.DirectionalLight(0xffffff, 1.5);
-            dLight.position.set(100, 200, 100);
+            scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+            const dLight = new THREE.DirectionalLight(0xffffff, 1.2);
+            dLight.position.set(50, 100, 50);
             scene.add(dLight);
 
             const loader = new GLTFLoader();
 
-            // Harita Yükleme
+            // 1. Haritayı Normal Boyutlara Yakın Tutuyoruz (Basık değil)
             loader.load('map.glb', (gltf) => {
                 const mapScene = gltf.scene;
-                // --- BASIKLIK DÜZELTME ---
-                // X, Y ve Z değerlerini eşit (100) yaparak haritayı orantılı büyütüyoruz.
-                // Freddy artık "Basık Tofaş" gibi olmayacak.
+                // Değerleri eşitledim (X, Y, Z hepsi 20). Hem büyük hem orantılı.
+                mapScene.scale.set(20, 20, 20); 
+                scene.add(mapScene);
+                document.getElementById('loading-screen').style.display = 'none';
+            }, (xhr) => {
+                // Yükleme barı düzeltmesi
+                let percent = 0;
+                if (xhr.lengthComputable) {
+                    percent = Math.round((xhr.loaded / xhr.total) * 100);
+                } else {
+                    // Eğer total belirsizse (bazen githubda olur), yapay bir ilerleme yapalım
+                    percent = Math.min(Math.round(xhr.loaded / 220000), 99); 
+                }
+                percent = Math.min(percent, 100); 
+                document.getElementById('progress-bar').style.width = percent + '%';
+                document.getElementById('status-text').innerHTML = percent + '%';
+            });
+
+            // 2. Freddy'yi Karınca Olmaktan Kurtarıyoruz
+            loader.load('C.glb', (gltf) => {
+                player = gltf.scene;
+                player.rotation.x = 0; 
+                
+                // Freddy'yi haritaya göre biraz büyütüyoruz ki "dev" gibi görünsün
+                player.scale.set(3, 3, 3); 
+                
+                player.position.set(0, 0, 0);
+                scene.add(player);
+                
+                if (gltf.animations.length > 0) {
+                    mixer = new THREE.AnimationMixer(player);
+                    walkAction = mixer.clipAction(gltf.animations[0]);
+                    punchAction = mixer.clipAction(gltf.animations[1]);
+                    kickAction = mixer.clipAction(gltf.animations[2]);
+                    if(punchAction) punchAction.setLoop(THREE.LoopOnce);
+                    if(kickAction) kickAction.setLoop(THREE.LoopOnce);
+                }
+            });
+
+            const joystick = nipplejs.create({
+                zone: document.getElementById('joystick-zone'),
+                mode: 'static', position: { left: '75px', bottom: '75px' },
+                color: 'white', size: 120
+            });
+
+            joystick.on('move', (evt, data) => joystickInput = { x: data.vector.x, y: data.vector.y });
+            joystick.on('end', () => joystickInput = { x: 0, y: 0 });
+
+            document.getElementById('btn-punch').addEventListener('touchstart', (e) => { e.preventDefault(); startAttack('punch'); });
+            document.getElementById('btn-kick').addEventListener('touchstart', (e) => { e.preventDefault(); startAttack('kick'); });
+        }
+
+        function startAttack(type) {
+            if (isAttacking || !player) return;
+            isAttacking = true;
+            if (walkAction) walkAction.stop();
+            let action = (type === 'punch') ? punchAction : kickAction;
+            if (action) {
+                action.reset().play();
+                const finished = (e) => { if(e.action === action) { isAttacking = false; mixer.removeEventListener('finished', finished); } };
+                mixer.addEventListener('finished', finished);
+            } else { isAttacking = false; }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (player && !isAttacking) {
+                const moveX = joystickInput.x;
+                const moveY = joystickInput.y;
+                if (Math.abs(moveX) > 0.1 || Math.abs(moveY) > 0.1) {
+                    // Freddy biraz daha hızlı gitsin
+                    player.position.x += moveX * 0.8;
+                    player.position.z -= moveY * 0.8;
+                    player.rotation.y = Math.atan2(moveX, moveY);
+                    if (walkAction && !walkAction.isRunning()) walkAction.play();
+                } else { if (walkAction) walkAction.stop(); }
+                
+                // Kamera mesafesi ayarı
+                camera.position.lerp(new THREE.Vector3(player.position.x, player.position.y + 20, player.position.z + 40), 0.1);
+                camera.lookAt(player.position);
+            }
+            if (mixer) mixer.update(delta);
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
                 mapScene.scale.set(100, 100, 100); 
                 scene.add(mapScene);
                 document.getElementById('loading-screen').style.display = 'none';
