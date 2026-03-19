@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, orientation=landscape">
+    <title>Site</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; user-select: none; }
+        canvas { display: block; }
+        #joystick-zone { position: absolute; bottom: 50px; left: 50px; width: 150px; height: 150px; z-index: 100; }
+        #action-buttons { position: absolute; bottom: 50px; right: 50px; display: flex; gap: 20px; z-index: 100; }
+        .action-btn { width: 80px; height: 80px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.5); background: rgba(255,255,255,0.1); color: white; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        #loading-screen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; color: white; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 200; }
+        #progress-container { width: 200px; height: 4px; background: #333; margin-top: 15px; border-radius: 2px; }
+        #progress-bar { width: 0%; height: 100%; background: #fff; }
+    </style>
+</head>
+<body>
+
+    <div id="loading-screen">
+        <div id="status-text">0%</div>
+        <div id="progress-container"><div id="progress-bar"></div></div>
+    </div>
+
+    <div id="joystick-zone"></div>
+    <div id="action-buttons">
+        <div class="action-btn" id="btn-punch">PUNCH</div>
+        <div class="action-btn" id="btn-kick">KICK</div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        let scene, camera, renderer, clock, mixer, player, walkAction, punchAction, kickAction;
+        let joystickInput = { x: 0, y: 0 };
+        let isAttacking = false;
+
+        init();
+        animate();
+
+        function init() {
+            clock = new THREE.Clock();
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 50000);
+            camera.position.set(0, 20, 40); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+            const dLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            dLight.position.set(100, 200, 100);
+            scene.add(dLight);
+
+            const loader = new GLTFLoader();
+
+            // Harita Yükleme
+            loader.load('map.glb', (gltf) => {
+                const mapScene = gltf.scene;
+                // --- BASIKLIK DÜZELTME ---
+                // X, Y ve Z değerlerini eşit (100) yaparak haritayı orantılı büyütüyoruz.
+                // Freddy artık "Basık Tofaş" gibi olmayacak.
+                mapScene.scale.set(100, 100, 100); 
+                scene.add(mapScene);
+                document.getElementById('loading-screen').style.display = 'none';
+            }, (xhr) => {
+                // --- YÜZDEYİ 100'DE SABİTLEME ---
+                let percent = Math.round((xhr.loaded / xhr.total) * 100);
+                if (percent > 100) percent = 100; // 100'ü geçmesini engelledik
+                document.getElementById('progress-bar').style.width = percent + '%';
+                document.getElementById('status-text').innerHTML = percent + '%';
+            });
+
+            // Karakter (Freddy) Yükleme
+            loader.load('C.glb', (gltf) => {
+                player = gltf.scene;
+                player.rotation.x = 0; 
+                player.position.y = 0; 
+                scene.add(player);
+                
+                if (gltf.animations.length > 0) {
+                    mixer = new THREE.AnimationMixer(player);
+                    walkAction = mixer.clipAction(gltf.animations[0]);
+                    punchAction = mixer.clipAction(gltf.animations[1]);
+                    kickAction = mixer.clipAction(gltf.animations[2]);
+                    if(punchAction) punchAction.setLoop(THREE.LoopOnce);
+                    if(kickAction) kickAction.setLoop(THREE.LoopOnce);
+                }
+            });
+
+            const joystick = nipplejs.create({
+                zone: document.getElementById('joystick-zone'),
+                mode: 'static', position: { left: '75px', bottom: '75px' },
+                color: 'white', size: 120
+            });
+
+            joystick.on('move', (evt, data) => joystickInput = { x: data.vector.x, y: data.vector.y });
+            joystick.on('end', () => joystickInput = { x: 0, y: 0 });
+
+            document.getElementById('btn-punch').addEventListener('touchstart', (e) => { e.preventDefault(); startAttack('punch'); });
+            document.getElementById('btn-kick').addEventListener('touchstart', (e) => { e.preventDefault(); startAttack('kick'); });
+        }
+
+        function startAttack(type) {
+            if (isAttacking || !player) return;
+            isAttacking = true;
+            if (walkAction) walkAction.stop();
+            let action = (type === 'punch') ? punchAction : kickAction;
+            if (action) {
+                action.reset().play();
+                const finished = (e) => { if(e.action === action) { isAttacking = false; mixer.removeEventListener('finished', finished); } };
+                mixer.addEventListener('finished', finished);
+            } else { isAttacking = false; }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (player && !isAttacking) {
+                const moveX = joystickInput.x;
+                const moveY = joystickInput.y;
+                if (Math.abs(moveX) > 0.1 || Math.abs(moveY) > 0.1) {
+                    player.position.x += moveX * 0.5; // Hız ayarı
+                    player.position.z -= moveY * 0.5;
+                    player.rotation.y = Math.atan2(moveX, moveY);
+                    if (walkAction && !walkAction.isRunning()) walkAction.play();
+                } else { if (walkAction) walkAction.stop(); }
+                
+                // Kamera Freddy'nin boyuna göre takipte
+                camera.position.lerp(new THREE.Vector3(player.position.x, player.position.y + 15, player.position.z + 30), 0.1);
+                camera.lookAt(player.position);
+            }
+            if (mixer) mixer.update(delta);
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        window.addEventListener('resize', onWindowResize);
+    </script>
+</body>
+</html>
